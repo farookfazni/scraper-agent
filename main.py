@@ -95,6 +95,7 @@ async def _run_once(
     include_raw: bool = False,
 ) -> None:
     from scraper import ScraperAgent, ScrapeSpec
+    from mcp_servers import build_scraper_mcp_servers
 
     spec = ScrapeSpec(
         target=target,
@@ -106,7 +107,12 @@ async def _run_once(
         include_raw_text=include_raw,
     )
 
-    agent = ScraperAgent()
+    mcp_servers = build_scraper_mcp_servers()
+    if mcp_servers:
+        names = [s.name for s in mcp_servers]
+        console.print(f"[dim]MCP servers: {', '.join(names)}[/dim]")
+
+    agent = ScraperAgent(mcp_servers=mcp_servers)
     console.print(Panel(spec.to_prompt_block(), title="[bold]Scrape Job[/bold]", expand=False))
 
     result = await agent.run(spec)
@@ -129,15 +135,20 @@ async def _run_once(
 
 async def _repl() -> None:
     from scraper import ScraperAgent, ScrapeSpec
+    from mcp_servers import build_scraper_mcp_servers
+
+    mcp_servers = build_scraper_mcp_servers()
+    mcp_names = [s.name for s in mcp_servers] if mcp_servers else []
 
     console.print(Panel(
         "[bold]scraper-agent[/bold] — Universal Web Scraper\n"
         "Type a URL or search query, then follow the prompts.\n"
+        f"MCP servers: {', '.join(mcp_names) if mcp_names else 'none (set API keys to enable)'}\n"
         "Commands: [dim]/reset[/dim] clear cache  [dim]/quit[/dim] exit",
         expand=False,
     ))
 
-    agent = ScraperAgent()
+    agent = ScraperAgent(mcp_servers=mcp_servers)
 
     while True:
         try:

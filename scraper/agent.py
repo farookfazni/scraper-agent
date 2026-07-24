@@ -5,8 +5,9 @@ Usage
 -----
 from scraper.agent import ScraperAgent
 from scraper.spec import ScrapeSpec
+from mcp_servers import build_scraper_mcp_servers
 
-agent = ScraperAgent()
+agent = ScraperAgent(mcp_servers=build_scraper_mcp_servers())
 result = await agent.run(ScrapeSpec(
     target="https://example.com/report.pdf",
     site_type="pdf",
@@ -22,7 +23,6 @@ import json
 import logging
 import os
 import time
-from datetime import datetime
 
 from agents import Agent, Runner
 from scraper.spec import ScrapeSpec, ScrapeOutput
@@ -46,53 +46,75 @@ You will receive a SCRAPE SPEC block describing the job. Follow the phases below
 PHASE 0 — READ THE SPEC
 ════════════════════════════════════════════════
 Parse the SCRAPE SPEC JSON. Note:
-  • target      — URL or search query
-  • site_type   — financial | news | ecommerce | pdf | table | general
+  • target         — URL or search query
+  • site_type      — financial | news | ecommerce | pdf | table | general
   • extract_fields — {field_name: type} — what to pull out
   • extraction_hint — optional human hint about where to find data
-  • wait_for / js_code — optional browser control
-  • magic       — anti-bot mode
-  • output_dir  — where to save
+  • wait_for / js_code — optional browser control for scrape_url
+  • magic          — anti-bot mode for scrape_url
+  • output_dir     — where to save
 
 ════════════════════════════════════════════════
-PHASE 1 — ACQUIRE CONTENT
+PHASE 1 — ACQUIRE CONTENT (search phase)
 ════════════════════════════════════════════════
 If target starts with "http":
   → Skip to PHASE 2 with that URL directly.
 
 If target is a search query:
-  → Try search tools in order, stop when you have 2-3 good URLs:
-     1. tavily_search     (if available — best for financial/news)
-     2. duckduckgo_search (always available)
-     3. firecrawl_search  (if available — fallback)
+  → Try search tools in this order, stop when you have 2-3 good URLs:
+     MCP tools (if mounted):
+       1. tavily `search`          ← best for financial/news — also try `extract` for direct URL content
+       2. firecrawl `firecrawl_search` ← crawl + search combined
+     Python tools (always available):
+       3. tavily_search            ← Python client fallback if Tavily MCP absent
+       4. duckduckgo_search        ← always available, no key needed
+       5. firecrawl_search         ← Python client fallback if Firecrawl MCP absent
 
 ════════════════════════════════════════════════
 PHASE 2 — SCRAPE CONTENT
 ════════════════════════════════════════════════
-Choose tools based on site_type and the URL:
+Choose tools based on site_type and URL. MCP tools are preferred when available:
 
   PDF URLs (.pdf in URL, or site_type="pdf"):
-    1. pdf_extract(url)          ← always try first — tables + text
-    2. scrape_url(url)           ← fallback if pdf_extract returns SCRAPE_ERROR/EMPTY
-    3. fetch_url(url)            ← last resort
+    1. pdf_extract(url)              ← always try first — tables + text
+    2. firecrawl `firecrawl_scrape`  ← if MCP mounted and pdf_extract fails
+    3. scrape_url(url)               ← crawl4ai fallback
+    4. fetch_url(url)                ← last resort
 
   Table-heavy pages (site_type="table"):
-    1. extract_structured(url, css_schema_json)  ← define selectors from the page structure
-    2. scrape_url(url)           ← fallback
+    1. firecrawl `firecrawl_extract` ← LLM-guided structured extraction (MCP)
+    2. extract_structured(url, css_schema_json) ← CSS selector extraction (crawl4ai)
+    3. scrape_url(url)               ← fallback
 
-  Multiple URLs to scrape at once (3+ URLs):
-    → Use scrape_urls(urls_json) for parallel fetching (much faster)
+  Multi-page site crawl (many links to follow):
+    1. firecrawl `firecrawl_crawl`   ← follows links across the site (MCP)
+    2. scrape_urls(urls_json)         ← parallel batch via crawl4ai
+
+  Deep research across many pages:
+    1. firecrawl `firecrawl_deep_research` ← multi-step AI research (MCP)
+
+  Specific known platforms (social, e-commerce, SERP):
+    1. Apify MCP actors (if mounted):
+       • apify/website-content-crawler — general sites
+       • apify/social-media-scraper    — Twitter/X, Instagram, LinkedIn
+       • apify/google-search-scraper   — Google SERP
+       • apify/amazon-product-scraper  — Amazon listings
+       • apify/youtube-scraper         — YouTube channels/videos
 
   Regular web pages (site_type="general", "news", "ecommerce", "financial"):
-    1. scrape_url(url, wait_for=..., js_code=..., magic=...)
-       — pass wait_for / js_code from the spec if provided
-    2. fetch_url(url)            ← fallback if scrape_url fails
+    1. tavily `extract`              ← direct URL content pull (Tavily MCP)
+    2. firecrawl `firecrawl_scrape`  ← high quality (Firecrawl MCP)
+    3. scrape_url(url, wait_for=..., js_code=..., magic=...)  ← crawl4ai
+    4. fetch_url(url)                ← plain HTTP, last resort
+
+  3+ URLs at once:
+    → Use scrape_urls(urls_json) for parallel crawl4ai fetching.
 
 ════════════════════════════════════════════════
 PHASE 3 — EXTRACT FIELDS
 ════════════════════════════════════════════════
 From the scraped content, extract every field listed in extract_fields.
-  • Use the extraction_hint if provided — it tells you where to look.
+  • Use extraction_hint if provided — it tells you where to look.
   • If a field cannot be found, set its value to null — never invent data.
   • Match the declared type: number → numeric, string → text, list → array.
 
@@ -108,7 +130,7 @@ Call save_result ONCE with this exact JSON envelope:
     ...
   },
   "sources": ["url1", "url2"],  // every URL scraped
-  "tools_used": ["scrape_url", "pdf_extract"],
+  "tools_used": ["scrape_url", "firecrawl_scrape"],
   "errors": [],                 // any non-fatal errors encountered
   "raw_text": null              // null unless spec.include_raw_text=true
 }
@@ -124,6 +146,8 @@ RULES
 • Never invent or estimate field values — null is always correct for missing data.
 • SCRAPE_ERROR / SCRAPE_EMPTY prefixes mean that tool failed — try the next one.
 • TOOL_UNAVAILABLE means the tool is not configured — skip it silently.
+• MCP tool names come from the server (firecrawl_scrape, search, extract, etc.) —
+  they appear automatically in your tool list when the MCP server is mounted.
 • Call save_result exactly once at the end of every run.
 • Return the file path from save_result as your final output.
 """
@@ -131,12 +155,16 @@ RULES
 
 class ScraperAgent:
     """
-    Thin wrapper around the Agent that handles setup, running, and parsing output.
+    Universal web scraping agent.
 
     Parameters
     ----------
     model : str
-        LLM model to use. Defaults to SCRAPER_MODEL env var or "gpt-4o-mini".
+        LLM model. Defaults to SCRAPER_MODEL env var or "gpt-4o-mini".
+    mcp_servers : list
+        MCP server instances (from mcp_servers.build_scraper_mcp_servers()).
+        When present, the agent gains firecrawl_crawl, firecrawl_deep_research,
+        firecrawl_extract, tavily extract, and Apify actors.
     extra_tools : list
         Additional @function_tool functions to inject (project-specific tools).
     """
@@ -144,6 +172,7 @@ class ScraperAgent:
     def __init__(
         self,
         model: str | None = None,
+        mcp_servers: list | None = None,
         extra_tools: list | None = None,
     ) -> None:
         self.model = model or os.getenv("SCRAPER_MODEL", "gpt-4o-mini")
@@ -155,11 +184,11 @@ class ScraperAgent:
             extract_structured,
             # PDF
             pdf_extract,
-            # Search
+            # Search (Python clients — fallback when MCP not mounted)
             duckduckgo_search,
             tavily_search,
             firecrawl_search,
-            # Fallback
+            # Fallback HTTP
             fetch_url,
             # Output
             save_result,
@@ -172,6 +201,7 @@ class ScraperAgent:
             model=self.model,
             instructions=_INSTRUCTIONS,
             tools=all_tools,
+            mcp_servers=mcp_servers or [],
         )
 
     async def run(self, spec: ScrapeSpec) -> ScrapeOutput:
@@ -210,7 +240,7 @@ class ScraperAgent:
             try:
                 with open(saved_path, encoding="utf-8") as f:
                     raw = json.load(f)
-                out = ScrapeOutput(
+                return ScrapeOutput(
                     meta={
                         **raw.get("_meta", {}),
                         "duration_seconds": duration,
@@ -223,11 +253,9 @@ class ScraperAgent:
                     errors=raw.get("errors", []),
                     raw_text=raw.get("raw_text") if spec.include_raw_text else None,
                 )
-                return out
             except Exception as e:
                 log.error("Could not parse saved result from %s: %s", saved_path, e)
 
-        # Fallback — return a failed output if file wasn't found/parsed
         return ScrapeOutput(
             meta={"duration_seconds": duration, "agent_output": output_str[:500]},
             status="failed",

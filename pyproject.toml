@@ -30,4 +30,4 @@ search = [
 scraper-agent = "main:main"
 
 [tool.setuptools.packages.find]
-include = ["scraper*"]
+include = ["scraper*", "mcp_servers*"]
