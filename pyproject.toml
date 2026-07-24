@@ -1,0 +1,33 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.backends.legacy:build"
+
+[project]
+name = "scraper-agent"
+version = "0.1.0"
+description = "Universal AI web scraping agent — flexible input, consistent JSON output"
+requires-python = ">=3.11"
+dependencies = [
+    "openai-agents>=0.0.17",
+    "openai>=1.30.0",
+    "python-dotenv>=1.0.0",
+    "pydantic>=2.0.0",
+    "rich>=13.0.0",
+    "httpx>=0.27.0",
+    "crawl4ai>=0.4.0",
+    "pdfplumber>=0.11.0",
+    "pymupdf4llm>=0.0.17",
+    "ddgs>=6.0.0",
+]
+
+[project.optional-dependencies]
+search = [
+    "tavily-python>=0.3.0",
+    "firecrawl-py>=1.0.0",
+]
+
+[project.scripts]
+scraper-agent = "main:main"
+
+[tool.setuptools.packages.find]
+include = ["scraper*"]
