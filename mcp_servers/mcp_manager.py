@@ -95,16 +95,17 @@ def build_firecrawl_mcp() -> MCPServerStdio | None:
 
 def build_apify_mcp() -> MCPServerStdio | None:
     """
-    Apify MCP (stdio via npx).
+    Apify MCP (stdio via npx, package @apify/actors-mcp-server).
     Free tier: $5/month credits — https://console.apify.com/account/integrations
 
-    Gives the agent access to 3,000+ pre-built scrapers (Apify Actors), e.g.:
-      apify/website-content-crawler  — generic site crawler
-      apify/cheerio-scraper          — fast lightweight HTML scraper
-      apify/social-media-scraper     — Twitter/X, Instagram, LinkedIn
-      apify/google-search-scraper    — Google SERP results
-      apify/amazon-product-scraper   — Amazon product data
-      apify/youtube-scraper          — YouTube video/channel data
+    Unlike Tavily/Firecrawl, Apify does NOT expose one fixed tool per Actor.
+    It works by dynamic discovery — the agent gains generic tools:
+      search-actors        — find a relevant Actor in the Apify Store by keyword
+      fetch-actor-details   — get an Actor's input schema before calling it
+      call-actor            — run an Actor and get its results
+      get-dataset-items     — pull paginated results from a finished run
+    See scraper/skills/apify_mcp.md for the full tool list and actor search
+    terms by category (e-commerce, social, SERP, maps, jobs, etc.).
 
     Requires: APIFY_API_KEY + Node.js 18+
     """
@@ -113,7 +114,7 @@ def build_apify_mcp() -> MCPServerStdio | None:
         return None
     return MCPServerStdio(
         name="apify",
-        params=_npx("-y", "@apify/mcp-server", env={"APIFY_TOKEN": api_key}),
+        params=_npx("-y", "@apify/actors-mcp-server", env={"APIFY_TOKEN": api_key}),
         cache_tools_list=True,
         client_session_timeout_seconds=30,
     )

@@ -10,8 +10,10 @@ Most scrapers are pipelines: fetch → parse → map fields, hardcoded per site.
 
 ## Features
 
+- **Just give it a URL** — you don't need to know what "site_type" or "extract_fields" mean. Give a URL/query and, optionally, a plain-language goal ("get me the pricing tiers") — the agent classifies the page and decides what's worth extracting on its own. Manual overrides (`--site-type`, `--fields`, `--schema`) are still there for scripted/advanced use.
 - **One agent, many tools** — browser-rendered scraping (crawl4ai), plain HTTP fetch, PDF extraction, CSS-selector table extraction, and three search backends, always available.
-- **Optional MCP servers** — mount Tavily (search + extract), Firecrawl (scrape/crawl/deep-research/extract), and Apify (3,000+ site-specific scrapers) just by setting an API key.
+- **Optional MCP servers** — mount Tavily (search + extract), Firecrawl (scrape/crawl/deep-research/extract), and Apify (actor discovery — 3,000+ site-specific scrapers) just by setting an API key.
+- **Skills layer** — each tool/MCP server has a dedicated reference doc (`scraper/skills/`) giving the agent real depth on parameters and gotchas, not just a one-line mention — loaded only for integrations you've actually configured.
 - **Fixed output schema** — every run produces the same JSON envelope (`status`, `data`, `sources`, `tools_used`, `errors`), regardless of which tools the agent chose.
 - **10 LLM providers** — swap providers with one env var; anything OpenAI-compatible works, including local Ollama.
 - **CLI and REPL** — one-shot `python main.py "<url or query>"` or an interactive session that reuses the same agent across turns.
@@ -34,12 +36,14 @@ pip install tavily-python firecrawl-py
 Run it:
 
 ```bash
-python main.py                  # interactive REPL
-python main.py "https://example.com/report.pdf" --schema report --fields "revenue:number,npat:number"
-python main.py "Apple Q3 earnings" --site-type news --schema apple_news
+python main.py                              # interactive REPL — just a URL/query + optional goal
+python main.py "https://example.com/report.pdf"   # simplest form — agent infers everything else
+python main.py "https://example.com/report.pdf" --schema report --fields "revenue:number,npat:number"  # manual override
 ```
 
 ## Example
+
+`python main.py "https://news.ycombinator.com" --hint "top 5 stories with points"` would work fine on its own — the agent infers `site_type="news"` and sensible fields. Here's the same job with every option pinned manually, for scripted/reproducible use:
 
 ```bash
 python main.py "https://news.ycombinator.com" \

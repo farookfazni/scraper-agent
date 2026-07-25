@@ -49,17 +49,24 @@ class ScrapeSpec(BaseModel):
             "  ecommerce  — product pages, pricing\n"
             "  pdf        — force PDF extraction even if URL doesn't end in .pdf\n"
             "  table      — pages with tabular data (uses CSS/JSON extraction)\n"
-            "  general    — no hint, try all tools in default priority order"
+            "  general    — no hint given; the agent should classify the actual\n"
+            "               content itself (from the URL/domain and what it scrapes)\n"
+            "               and follow whichever row above actually fits, rather than\n"
+            "               assuming 'general' is accurate just because it's the default."
         ),
     )
 
     # ── What to extract ───────────────────────────────────────────────────────
     extract_fields: dict[str, str] = Field(
-        ...,
+        default_factory=dict,
         description=(
             "Fields to extract. Key = output field name, value = type hint.\n"
             "  Supported types: string, number, integer, boolean, list, object\n"
-            "  Example: {\"company\": \"string\", \"revenue\": \"number\", \"years\": \"list\"}"
+            "  Example: {\"company\": \"string\", \"revenue\": \"number\", \"years\": \"list\"}\n"
+            "  Leave empty ({}) to let the agent decide what's worth extracting —\n"
+            "  it will derive fields from extraction_hint if given, or otherwise\n"
+            "  produce a general-purpose summary (title, summary, key_points, and\n"
+            "  any obviously structured data it finds on the page)."
         ),
     )
     schema_name: str = Field(
@@ -69,7 +76,10 @@ class ScrapeSpec(BaseModel):
     extraction_hint: str | None = Field(
         None,
         description=(
-            "Optional free-text instruction for the agent about where/how to find the fields.\n"
+            "Optional free-text instruction from the user about what they want —\n"
+            "this doubles as the primary user-facing input when extract_fields is\n"
+            "empty (e.g. 'get me the pricing tiers', 'summarize the main topics').\n"
+            "Use it to decide what fields to extract, not just where to find them.\n"
             "Example: 'Revenue is in the Consolidated Statement of Profit or Loss table.'"
         ),
     )
@@ -93,11 +103,44 @@ class ScrapeSpec(BaseModel):
     )
     use_session: bool = Field(
         False,
-        description="Reuse a persistent browser session (for login flows or multi-page scraping).",
+        description=(
+            "Reuse a persistent browser session (for login flows or multi-page scraping). "
+            "This is a job-level hint only — scrape_url's own session_id parameter takes an "
+            "arbitrary STRING (not this boolean). If this is true, invent a session_id string "
+            "and pass the same one on every scrape_url call for this job."
+        ),
     )
     magic: bool = Field(
         False,
         description="Enable crawl4ai magic mode — automatic anti-bot bypass.",
+    )
+    respect_robots_txt: bool = Field(
+        False,
+        description="Honor the site's robots.txt before scraping with scrape_url.",
+    )
+    remove_popups: bool = Field(
+        False,
+        description="Strip cookie/consent banners and overlay modals before extracting content.",
+    )
+    css_selector: str | None = Field(
+        None,
+        description=(
+            "CSS selector to scope extraction to a specific container "
+            "(e.g. 'main.report-content'). Useful for table/financial pages "
+            "with a lot of surrounding nav/ad noise."
+        ),
+    )
+    excluded_tags: str | None = Field(
+        None,
+        description="Comma-separated HTML tags to drop entirely, e.g. 'nav,footer,aside'.",
+    )
+    exclude_external_links: bool = Field(
+        False,
+        description="Drop links pointing outside the scraped domain from the extracted markdown.",
+    )
+    scan_full_page: bool = Field(
+        False,
+        description="Auto-scroll the page before extracting — use for infinite-scroll feeds.",
     )
 
     # ── Search settings (only when target is a query) ────────────────────────

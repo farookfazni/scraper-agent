@@ -3,8 +3,9 @@ scraper-agent CLI — interactive REPL and programmatic entry point.
 
 Usage
 -----
-  python main.py                     # interactive prompt
-  python main.py "https://example.com" --schema homepage --fields "title:string,h1:string"
+  python main.py                     # interactive prompt — just give a URL/query + optional goal
+  python main.py "https://example.com"   # simplest form — agent infers page type and fields itself
+  python main.py "https://example.com" --schema homepage --fields "title:string,h1:string"  # manual override
   python main.py "Apple revenue 2024" --site-type news --fields "headline:string,date:string"
 
 Environment
@@ -20,8 +21,10 @@ import asyncio
 import json
 import logging
 import os
+import re
 import sys
 from pathlib import Path
+from urllib.parse import urlparse
 
 from dotenv import load_dotenv
 from rich.console import Console
@@ -142,7 +145,8 @@ async def _repl() -> None:
 
     console.print(Panel(
         "[bold]scraper-agent[/bold] — Universal Web Scraper\n"
-        "Type a URL or search query, then follow the prompts.\n"
+        "Give a URL or search query, and optionally say what you want from it.\n"
+        "The agent figures out the rest (page type, what to extract) on its own.\n"
         f"MCP servers: {', '.join(mcp_names) if mcp_names else 'none (set API keys to enable)'}\n"
         "Commands: [dim]/reset[/dim] clear cache  [dim]/quit[/dim] exit",
         expand=False,
@@ -166,34 +170,15 @@ async def _repl() -> None:
             console.print("[dim]Cache cleared.[/dim]")
             continue
 
-        site_type = Prompt.ask(
-            "Site type",
-            choices=["general", "financial", "news", "ecommerce", "pdf", "table"],
-            default="general",
-        )
-        schema_name = Prompt.ask("Schema name (for output filename)", default="scraped")
-        fields_raw = Prompt.ask(
-            "Fields to extract (field:type, comma-separated, or leave blank)",
+        hint = Prompt.ask(
+            "What do you want from it? (optional — leave blank for a general summary)",
             default="",
         )
-        hint = Prompt.ask("Extraction hint (optional)", default="")
-
-        fields: dict[str, str] = {}
-        if fields_raw.strip():
-            for pair in fields_raw.split(","):
-                pair = pair.strip()
-                if ":" in pair:
-                    k, v = pair.split(":", 1)
-                    fields[k.strip()] = v.strip()
-                else:
-                    fields[pair] = "string"
 
         spec = ScrapeSpec(
             target=target,
-            site_type=site_type,
-            extract_fields=fields,
-            schema_name=schema_name,
             extraction_hint=hint,
+            schema_name=_default_schema_name(target),
             output_dir="output",
         )
 
@@ -216,6 +201,23 @@ async def _repl() -> None:
 
         if result.meta.get("output_path"):
             console.print(f"[dim]Saved → {result.meta['output_path']}[/dim]")
+
+
+def _default_schema_name(target: str) -> str:
+    """
+    Auto-generate a filename-friendly schema name from a URL or search query,
+    so a regular user is never asked to invent one.
+    Examples: "https://roadmap.sh/ai-engineer" -> "roadmap_sh_ai_engineer"
+              "Apple Q3 earnings"               -> "apple_q3_earnings"
+    """
+    if target.startswith("http://") or target.startswith("https://"):
+        parsed = urlparse(target)
+        raw = f"{parsed.netloc}{parsed.path}"
+    else:
+        raw = " ".join(target.split()[:6])
+
+    slug = re.sub(r"[^a-zA-Z0-9]+", "_", raw).strip("_").lower()
+    return slug[:60] or "scraped"
 
 
 def _parse_fields(raw: str) -> dict[str, str]:
@@ -241,7 +243,7 @@ def main() -> None:
         description="Universal AI web scraper",
     )
     parser.add_argument("target", nargs="?", help="URL or search query (omit for interactive mode)")
-    parser.add_argument("--schema", default="scraped", help="Schema name for the output file")
+    parser.add_argument("--schema", default=None, help="Schema name for the output file (auto-generated from the target if omitted)")
     parser.add_argument("--site-type", default="general",
                         choices=["general", "financial", "news", "ecommerce", "pdf", "table"])
     parser.add_argument("--fields", default="",
@@ -254,11 +256,12 @@ def main() -> None:
 
     if args.target:
         fields = _parse_fields(args.fields)
+        schema_name = args.schema or _default_schema_name(args.target)
         asyncio.run(_run_once(
             args.target,
             site_type=args.site_type,
             fields=fields,
-            schema_name=args.schema,
+            schema_name=schema_name,
             extraction_hint=args.hint,
             output_dir=args.output_dir,
             include_raw=args.raw,

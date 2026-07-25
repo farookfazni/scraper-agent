@@ -16,9 +16,9 @@ For optional Tavily / Firecrawl search: `pip install tavily-python firecrawl-py`
 ## Running
 
 ```bash
-python main.py                  # interactive REPL
-python main.py "https://example.com/report.pdf" --schema report --fields "revenue:number,npat:number"
-python main.py "Apple Q3 earnings" --site-type news --schema apple_news
+python main.py                  # interactive REPL — just a URL/query + optional goal
+python main.py "https://example.com/report.pdf"   # simplest form — agent infers site_type/fields itself
+python main.py "https://example.com/report.pdf" --schema report --fields "revenue:number,npat:number"  # manual override
 ```
 
 ## Architecture
@@ -32,7 +32,8 @@ main.py  (CLI / REPL)
         ├── MCP servers (optional, mounted when API key is present)
         │     ├── tavily MCP        — search + extract (StreamableHttp)
         │     ├── firecrawl MCP     — scrape/crawl/deep_research/extract (stdio/npx)
-        │     └── apify MCP         — 3,000+ site-specific scrapers (stdio/npx)
+        │     └── apify MCP         — actor discovery: search-actors/call-actor/etc. (stdio/npx)
+        ├── scraper/skills/*.md      — per-capability docs, conditionally composed into the prompt
         └── Python tools (always available)
               ├── scrape_url          — single URL, full crawl4ai options
               ├── scrape_urls         — parallel batch via arun_many
@@ -50,7 +51,8 @@ main.py  (CLI / REPL)
 | File | Purpose |
 | --- | --- |
 | `scraper/spec.py` | `ScrapeSpec` (job definition) and `ScrapeOutput` (parsed result) Pydantic models |
-| `scraper/agent.py` | `ScraperAgent` class — wraps the SDK `Agent`, holds tool list + mcp_servers, parses output |
+| `scraper/agent.py` | `ScraperAgent` class — wraps the SDK `Agent`, holds tool list + mcp_servers, composes skill docs into the prompt, parses output |
+| `scraper/skills/` | Per-capability reference docs (crawl4ai, search/fetch, tavily/firecrawl/apify MCP) — loaded conditionally based on mounted MCP servers |
 | `mcp_servers/mcp_manager.py` | `build_scraper_mcp_servers()` — builds Tavily/Firecrawl/Apify MCP server instances |
 | `scraper/tools/crawl4ai_tool.py` | `scrape_url`, `scrape_urls`, `extract_structured` — full crawl4ai feature set |
 | `scraper/tools/pdf_tool.py` | `pdf_extract` — pdfplumber + pymupdf4llm |
@@ -85,7 +87,7 @@ Every run produces `output/{schema_name}_{timestamp}.json` with this envelope:
 | `SCRAPER_MODEL` | `gpt-4o-mini` | Model passed to `ScraperAgent` |
 | `TAVILY_API_KEY` | — | Enables Tavily MCP (`search` + `extract`) and `tavily_search` Python tool |
 | `FIRECRAWL_API_KEY` | — | Enables Firecrawl MCP (`firecrawl_scrape/crawl/extract/deep_research`) and `firecrawl_search` Python tool |
-| `APIFY_API_KEY` | — | Enables Apify MCP (3,000+ pre-built scrapers) |
+| `APIFY_API_KEY` | — | Enables Apify MCP (actor discovery — 3,000+ pre-built scrapers found via `search-actors`) |
 
 Ten providers: `openai`, `groq`, `openrouter`, `gemini`, `ollama`, `together`, `deepseek`, `nvidia`, `huggingface`, `cerebras`.
 
@@ -97,7 +99,7 @@ Ten providers: `openai`, `groq`, `openrouter`, `gemini`, `ollama`, `together`, `
 | `table` | skip | firecrawl_extract (MCP) → extract_structured → scrape_url |
 | `financial` | tavily MCP → ddg | tavily extract (MCP) → firecrawl_scrape (MCP) → scrape_url → fetch_url |
 | `news` | tavily MCP → ddg | tavily extract (MCP) → firecrawl_scrape (MCP) → scrape_url → fetch_url |
-| `ecommerce` | ddg | apify actor (MCP) → scrape_url → fetch_url |
+| `ecommerce` | ddg | apify MCP (search-actors → call-actor) → scrape_url → fetch_url |
 | `general` | ddg | scrape_url → fetch_url |
 | any (URL given) | skip | per site_type above |
 | any (3+ URLs) | skip | scrape_urls (parallel) |
@@ -109,7 +111,8 @@ MCP columns apply only when the relevant API key is set. Without any keys, the a
 ## Extending
 
 - **New Python tool** — add `@function_tool` in `scraper/tools/`, export from `scraper/tools/__init__.py`, add to `all_tools` in `scraper/agent.py`.
-- **New MCP server** — add a builder in `mcp_servers/mcp_manager.py`, append to `build_scraper_mcp_servers()`.
+- **New MCP server** — add a builder (with an explicit `name=`) in `mcp_servers/mcp_manager.py`, append to `build_scraper_mcp_servers()`, add a matching skill file under `scraper/skills/` and register it in `_MCP_SKILLS` (`scraper/agent.py`).
+- **New/updated skill doc** — edit `scraper/skills/*.md` for per-tool depth (params, gotchas); keep the site_type try-order table itself in `_BASE_INSTRUCTIONS` only, not in skill files.
 - **New provider** — add `base_url` mapping in `main.py`'s `_setup_client()`.
 - **Custom output fields** — extend `ScrapeSpec.extract_fields`; the JSON envelope is fixed, `data` is open.
 - **Extra tools at runtime** — pass `extra_tools=[my_tool]` to `ScraperAgent(extra_tools=...)`.

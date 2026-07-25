@@ -8,7 +8,7 @@ Traditional scrapers are pipelines written in code: `if site == X: use parser A;
 
 scraper-agent inverts this: there is **one LLM agent** with a fixed toolbox (9 Python functions + whatever MCP servers are configured), and a **system prompt** that tells the agent, in natural language, what order to try tools in for a given `site_type`, and what to do when a tool fails. The agent — not a Python dispatcher — decides which tool to call next, based on the prompt and the tool's return value.
 
-This has one big consequence worth internalizing before reading any code: **the "routing logic" you'd expect to find as an `if/elif` chain in `agent.py` doesn't exist there.** It lives entirely inside the `_INSTRUCTIONS` string in `scraper/agent.py`. If you want to change fallback order, you edit that prompt text, not control flow.
+This has one big consequence worth internalizing before reading any code: **the "routing logic" you'd expect to find as an `if/elif` chain in `agent.py` doesn't exist there.** It lives entirely inside the prompt built by `scraper/agent.py` — a `_BASE_INSTRUCTIONS` skeleton (try-order table, phases, rules) plus per-capability **skill** documents (`scraper/skills/*.md`) composed in at agent-construction time (see §7). If you want to change fallback order, edit `_BASE_INSTRUCTIONS`; if you want to change how deeply the agent understands one specific tool/MCP server, edit its skill file.
 
 ## 2. Request lifecycle
 
@@ -54,7 +54,8 @@ main.py  (CLI / REPL)
         ├── MCP servers (optional, mounted only when the matching API key is present)
         │     ├── tavily MCP        — search + extract (StreamableHttp, remote)
         │     ├── firecrawl MCP     — scrape/crawl/deep_research/extract (stdio, via npx)
-        │     └── apify MCP         — 3,000+ site-specific scrapers (stdio, via npx)
+        │     └── apify MCP         — actor discovery: search-actors/call-actor/etc. (stdio, via npx)
+        ├── scraper/skills/*.md      — per-capability reference docs, conditionally composed into the prompt (§7)
         └── Python tools (always registered, self-report TOOL_UNAVAILABLE if their key/package is missing)
               ├── scrape_url          — single URL, full crawl4ai (headless browser) options
               ├── scrape_urls         — parallel batch via crawl4ai's arun_many
@@ -97,14 +98,14 @@ This is what makes the project provider-agnostic: any provider with an OpenAI-co
 
 ### `scraper/spec.py` — the two data contracts
 
-- **`ScrapeSpec`** — the job definition. Holds `target`, `site_type` (one of `financial|news|ecommerce|pdf|table|general`), `extract_fields` (a `dict[str, str]` of field name → type hint), plus browser-control knobs (`wait_for`, `js_code`, `use_session`, `magic`) that get threaded through to crawl4ai. `to_prompt_block()` serializes the whole thing to indented JSON — this JSON block is injected verbatim into the LLM's prompt, so the agent literally reads your spec as structured text.
+- **`ScrapeSpec`** — the job definition. Only `target` is truly required. Holds `site_type` (one of `financial|news|ecommerce|pdf|table|general`, defaults to `"general"` — the agent is instructed to self-classify rather than trust this blindly, see §4's `_BASE_INSTRUCTIONS` PHASE 0), `extract_fields` (a `dict[str, str]` of field name → type hint, **defaults to `{}`** — empty means "you decide," see PHASE 3), `extraction_hint` (doubles as the primary user-facing "what do you want" free-text input when `extract_fields` is empty), plus browser-control knobs threaded through to crawl4ai's `scrape_url`: `wait_for`, `js_code`, `use_session` (bool — a job-level hint; the agent must invent its own `session_id` string for `scrape_url` when this is true, see §7's crawl4ai skill), `magic`, `respect_robots_txt`, `remove_popups`, `css_selector`, `excluded_tags`, `exclude_external_links`, `scan_full_page`. `to_prompt_block()` serializes the whole thing to indented JSON — this JSON block is injected verbatim into the LLM's prompt, so the agent literally reads your spec as structured text. This design intentionally lets a caller (the REPL, in the common case) construct a spec with almost nothing filled in and rely on the agent to fill the gaps — see §8.
 - **`ScrapeOutput`** — the fixed result envelope: `status`, `data`, `sources`, `tools_used`, `errors`, `raw_text`, plus a loosely-typed `meta` dict. This is the shape every run returns, regardless of which tools were used internally.
 
 ### `scraper/agent.py` — the orchestrator
 
 This is the file that matters most for understanding "why it works this way."
 
-**`_INSTRUCTIONS`** is a multi-phase system prompt, not code:
+**`_BASE_INSTRUCTIONS`** (formerly `_INSTRUCTIONS` — renamed when the skills layer was added, see §7) is a multi-phase system prompt, not code:
 
 | Phase | What it tells the LLM to do |
 | --- | --- |
@@ -122,7 +123,7 @@ Phase 2's per-`site_type` tool priority (this table is duplicated from `CLAUDE.m
 | `table` | skip | MCP `firecrawl_extract` → `extract_structured` → `scrape_url` |
 | `financial` | tavily MCP → ddg | MCP tavily `extract` → MCP `firecrawl_scrape` → `scrape_url` → `fetch_url` |
 | `news` | tavily MCP → ddg | MCP tavily `extract` → MCP `firecrawl_scrape` → `scrape_url` → `fetch_url` |
-| `ecommerce` | ddg | Apify actor (MCP) → `scrape_url` → `fetch_url` |
+| `ecommerce` | ddg | Apify MCP (search-actors → call-actor) → `scrape_url` → `fetch_url` |
 | `general` | ddg | `scrape_url` → `fetch_url` |
 | any (URL given directly) | skip | per `site_type` above |
 | any (3+ URLs) | skip | `scrape_urls` (parallel) |
@@ -131,10 +132,10 @@ Phase 2's per-`site_type` tool priority (this table is duplicated from `CLAUDE.m
 
 The **RULES** section of the prompt also defines the sentinel-string error protocol (see §5) and instructs the agent to return the saved file path as its final output.
 
-**`ScraperAgent.__init__`** builds an `Agent` (from the `agents` SDK) with `name="ScraperAgent"`, `model` (default `gpt-4o-mini`, overridable via `SCRAPER_MODEL`), `instructions=_INSTRUCTIONS`, and the 9 always-on tools plus whatever `mcp_servers` were passed in. All 9 Python tools are registered unconditionally — even ones whose API key is missing — because each tool checks its own prerequisites at call time and returns `TOOL_UNAVAILABLE: ...` rather than needing to be conditionally excluded at construction time.
+**`ScraperAgent.__init__`** builds an `Agent` (from the `agents` SDK) with `name="ScraperAgent"`, `model` (default `gpt-4o-mini`, overridable via `SCRAPER_MODEL`), `instructions=_compose_instructions(mcp_servers)` (§7), and the 9 always-on tools plus whatever `mcp_servers` were passed in. All 9 Python tools are registered unconditionally — even ones whose API key is missing — because each tool checks its own prerequisites at call time and returns `TOOL_UNAVAILABLE: ...` rather than needing to be conditionally excluded at construction time.
 
 **`ScraperAgent.run(spec)`** does three things:
-1. Serializes `spec` into the prompt and calls `Runner.run(self._agent, input=prompt, max_turns=30)` — this is the actual agent loop (LLM call → tool execution → feed result back → repeat).
+1. Serializes `spec` into the prompt and calls `Runner.run(self._agent, input=prompt, max_turns=30, run_config=RunConfig(model_provider=_MODEL_PROVIDER))` — this is the actual agent loop (LLM call → tool execution → feed result back → repeat). `_MODEL_PROVIDER` is a `MultiProvider(unknown_prefix_mode="model_id")` — needed because some providers use `/` as part of a literal model ID (Groq's `groq/compound`, OpenRouter's `openrouter/openai/gpt-4o`), which the SDK's default `MultiProvider` otherwise misreads as an unrecognized routing prefix and rejects with `UserError: Unknown prefix: ...`. `model_id` mode passes such strings through as-is to the already-configured OpenAI-compatible client instead.
 2. Scans the agent's final text output for the literal string `"Saved:"` followed by a token ending in `.json` that exists on disk, then re-opens and re-parses that JSON file. This is how the Python code recovers structured output from an LLM that was asked to "return the saved path as your final output" — it's a string-matching bridge between the agent's free-text final answer and the tool's actual side effect (writing a file via `save_result`).
 3. If that parsing fails or no path is found, it returns `ScrapeOutput(status="failed", errors=[...])` with the agent's raw output (truncated to 200 chars) as the error message.
 
@@ -150,7 +151,7 @@ Every tool follows the same contract: **return a string (or JSON-string) describ
 | `TOOL_UNAVAILABLE: ...` | Missing API key or missing optional package | Skip silently, try the next tool |
 | `ERROR: ...` | Malformed input to the tool itself (e.g. bad JSON) | — |
 
-- **`scrape_url`** (`crawl4ai_tool.py`) — headless-browser scrape via crawl4ai's `AsyncWebCrawler`. Supports `wait_for`/`js_code`/`magic` (anti-bot heuristics) passed straight from `ScrapeSpec`. Prefers `fit_markdown` → `raw_markdown` → raw string → `extracted_content`. Truncates to `MAX_CONTENT_CHARS` (20,000 chars), 30s page timeout.
+- **`scrape_url`** (`crawl4ai_tool.py`) — headless-browser scrape via crawl4ai's `AsyncWebCrawler`. Supports `wait_for`/`js_code`/`magic` (anti-bot heuristics), plus `respect_robots_txt`/`remove_popups`/`css_selector`/`excluded_tags`/`exclude_external_links`/`scan_full_page`, all passed straight from `ScrapeSpec` through to `CrawlerRunConfig`. Prefers `fit_markdown` → `raw_markdown` → raw string → `extracted_content`. Truncates to `MAX_CONTENT_CHARS` (20,000 chars), 30s page timeout. Full parameter guidance lives in `scraper/skills/crawl4ai.md`, not just this docstring — that's what the agent actually reads to decide when to use each one.
 - **`scrape_urls`** — same engine, parallel via `arun_many`, for 3+ URL batches. Per-URL truncation shares the same `MAX_CONTENT_CHARS` constant as `scrape_url`.
 - **`extract_structured`** — pure CSS-selector extraction via crawl4ai's `JsonCssExtractionStrategy`; no LLM call, used for known-structure table pages.
 - **`pdf_extract`** (`pdf_tool.py`) — downloads the PDF (spoofed User-Agent, `verify=False`), validates it isn't actually HTML via the `%PDF` magic-byte check, tries `pdfplumber` first (tables as pipe-delimited markdown + filtered text), falls back to `pymupdf4llm` if that yields under 50 chars. Caps at 30,000 chars / 40 pages. No OCR — scanned image PDFs without a text layer will return `SCRAPE_EMPTY`.
@@ -165,13 +166,13 @@ Every tool follows the same contract: **return a string (or JSON-string) describ
 
 - **`build_tavily_mcp()`** — `MCPServerStreamableHttp` over HTTP to `https://mcp.tavily.com/mcp/?tavilyApiKey=<key>` (the key travels as a URL query parameter — worth keeping out of logs). Adds `search` + `extract`.
 - **`build_firecrawl_mcp()`** — `MCPServerStdio` launching `npx -y firecrawl-mcp` with `FIRECRAWL_API_KEY` in its subprocess env. Needs Node 18+. Adds `firecrawl_scrape/search/crawl/extract/deep_research`.
-- **`build_apify_mcp()`** — `MCPServerStdio` launching `npx -y @apify/mcp-server`. Note the env var translation: the project's `APIFY_API_KEY` is passed to the subprocess as `APIFY_TOKEN`, because that's the name Apify's own MCP server expects.
+- **`build_apify_mcp()`** — `MCPServerStdio` launching `npx -y @apify/actors-mcp-server` (corrected from an earlier `@apify/mcp-server`, which is not the real package name and would have failed to start). Note the env var translation: the project's `APIFY_API_KEY` is passed to the subprocess as `APIFY_TOKEN`, because that's the name Apify's own MCP server expects. Unlike Tavily/Firecrawl, Apify does not expose one tool per scraper — it exposes generic discovery tools (`search-actors`, `fetch-actor-details`, `call-actor`, `get-dataset-items`, ...) for finding and running any of its 3,000+ pre-built Actors at runtime. See `scraper/skills/apify_mcp.md` for the full tool list and actor-search categories.
 
 On Windows, `npx` is invoked via `cmd /c npx ...` rather than directly — `_npx()` branches on `sys.platform == "win32"` — because `npx` isn't directly spawnable as a subprocess target on Windows the way it is on POSIX.
 
 ## 5. Design tradeoffs worth knowing
 
-- **Prompt-encoded routing** means changing tool priority is a prompt-engineering change, not a code change — faster to iterate, but not unit-testable in the traditional sense, and behavior can drift if the underlying LLM interprets instructions differently across model swaps.
+- **Prompt-encoded routing** means changing tool priority (`_BASE_INSTRUCTIONS`) or per-tool depth (`scraper/skills/*.md`) is a prompt-engineering change, not a code change — faster to iterate, but not unit-testable in the traditional sense, and behavior can drift if the underlying LLM interprets instructions differently across model swaps.
 - **String-sentinel error protocol** avoids exceptions terminating agent runs, but means tool authors must remember the convention — there's no shared exception type or `Result`-like structure enforcing it.
 - **Output-path recovery via text search** (`ScraperAgent.run()` looking for `"Saved:"` + a valid `.json` path) is a fragile bridge — if the LLM paraphrases or the model doesn't echo the exact save path, the run reports `status="failed"` even though a file was actually written.
 - **`verify=False`** (TLS verification disabled) is hardcoded in both `pdf_tool.py` and `fetch_tool.py`. Deliberate, likely for compatibility with self-signed/corporate-proxy certs, but worth knowing before pointing this at anything security-sensitive.
@@ -195,3 +196,35 @@ Every run — regardless of which tools were used — produces `output/{schema_n
 ```
 
 `data` is intentionally open-ended (`dict[str, Any]`) — the fixed part of the contract is the envelope around it, not the extracted fields themselves.
+
+## 7. Skills layer
+
+Beyond the try-order table (§4, `_BASE_INSTRUCTIONS`), the agent needs actual depth on each capability source to use it well — exact tool names, parameters, and gotchas. That depth lives in `scraper/skills/*.md`, one file per capability:
+
+```text
+scraper/skills/
+  __init__.py          # load_skill(name) -> str, in-process cache
+  crawl4ai.md           # always loaded — scrape_url/scrape_urls/extract_structured full param reference
+  search_and_fetch.md   # always loaded — ddg/tavily_search/firecrawl_search/fetch_url/pdf_extract/save_result
+  tavily_mcp.md          # loaded only if a server named "tavily" is mounted
+  firecrawl_mcp.md       # loaded only if "firecrawl" is mounted
+  apify_mcp.md            # loaded only if "apify" is mounted
+```
+
+**Division of responsibility** — this is the key design rule, so a skill file never becomes a second copy of the priority table: `_BASE_INSTRUCTIONS` says *when* to try a tool (the site_type table in §4); a skill file says *how* to actually use it once you've decided to (exact tool names, parameters, failure modes, when to prefer one MCP server's version of a capability over another's). Phase-2 tool mentions in `_BASE_INSTRUCTIONS` are one-liners with a pointer (e.g. `"see TAVILY MCP skill below"`) rather than duplicated detail.
+
+**Conditional composition** — `_compose_instructions(mcp_servers)` in `scraper/agent.py` builds the final prompt once, at `ScraperAgent.__init__` time: `_BASE_INSTRUCTIONS` + the two always-on skills + only the MCP skills whose server is actually present in `mcp_servers` (checked via each server's `.name` attribute — `"tavily"`/`"firecrawl"`/`"apify"`, matching what `mcp_servers/mcp_manager.py`'s builders set). An agent constructed with no API keys carries zero MCP skill content and therefore a smaller, cheaper prompt than one with all three configured. This also means hand-built `mcp_servers` lists (per the "extra MCP servers at runtime" pattern in `docs/DEVELOPER.md`) get correct skill loading automatically, since it keys off the actual list passed in, not a fresh environment-variable check.
+
+The SDK's `Agent.instructions` also accepts a callable for *per-run* dynamic prompts, not just a static string — not used here, since a `ScraperAgent` instance's mounted servers never change after construction, so precomputing once is simpler. Worth knowing if a future use case needs an agent instance to swap MCP mounts without being rebuilt.
+
+## 8. Zero-config input — the agent infers what a regular user shouldn't have to know
+
+A `ScrapeSpec` only strictly requires `target`. Everything else that used to require upfront knowledge of the tool's internals — `site_type`, `extract_fields`, `schema_name` — now has a sensible default and an explicit instruction telling the agent to fill the gap itself rather than trust the default at face value:
+
+- **`site_type` defaults to `"general"`.** PHASE 0 of `_BASE_INSTRUCTIONS` tells the agent that a default `"general"` value does NOT mean the page actually is general-purpose — it should classify the real content itself (from the URL/domain and what it scrapes) and follow whichever PHASE 2 row actually fits.
+- **`extract_fields` defaults to `{}`.** PHASE 3 tells the agent: if fields were given, extract exactly those; if not, derive fields from `extraction_hint` (the user's plain-language goal, e.g. "get me the pricing tiers"); if `extraction_hint` is *also* empty, produce a general-purpose summary (`title`, `summary`, `key_points`, plus whatever else is obviously useful for that specific page) rather than returning empty data.
+- **`schema_name`** is auto-generated by `main.py`'s `_default_schema_name()` from the target (URL path or first few words of a query, slugified) whenever the caller doesn't supply one — so the REPL never has to ask for a filename label either.
+
+The REPL (`main.py::_repl`) reflects this directly: it only prompts for `target` and an optional plain-language goal (`extraction_hint`). `site_type`/`extract_fields`/`schema_name` are no longer interactive prompts — they're either inferred or auto-generated. The CLI (`main.py::main`) keeps `--site-type`/`--fields`/`--schema` as explicit opt-in overrides for scripted/reproducible use, unchanged in behavior when passed.
+
+This also closes a real bug that motivated part of this design: earlier, some models (especially non-OpenAI providers with stricter/differently-behaved function-calling) would try to forward whole `ScrapeSpec` fields like `extraction_hint`/`include_raw_text`/`use_session` directly into `scrape_url`'s tool-call arguments, which don't accept those parameters and get rejected by the provider's schema validation (`additionalProperties` error). The RULES section of `_BASE_INSTRUCTIONS` now explicitly warns against this — tool calls must only include parameters that tool's own schema declares, never fields copied from the spec block just because the names look similar.

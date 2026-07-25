@@ -29,15 +29,33 @@ def _import_crawl4ai():
         return None
 
 
+def _coerce_bool(value: bool | str) -> bool:
+    """
+    Some models (notably text-based tool-call formats like Groq's compound
+    models) serialize booleans as the strings "True"/"False" instead of
+    JSON's true/false. Accept either so a schema-valid string doesn't get
+    silently misread — only "true"/"1"/"yes" (case-insensitive) count as True.
+    """
+    if isinstance(value, bool):
+        return value
+    return str(value).strip().lower() in ("true", "1", "yes")
+
+
 @function_tool
 @cached_tool
 async def scrape_url(
     url: str,
-    wait_for: str = "",
-    js_code: str = "",
-    use_session: str = "",
-    magic: bool = False,
+    wait_for: str | None = None,
+    js_code: str | None = None,
+    session_id: str | None = None,
+    magic: bool | str = False,
     word_count_threshold: int = 50,
+    respect_robots_txt: bool | str = False,
+    remove_popups: bool | str = False,
+    css_selector: str | None = None,
+    excluded_tags: str | None = None,
+    exclude_external_links: bool | str = False,
+    scan_full_page: bool | str = False,
 ) -> str:
     """
     Scrape a single URL using crawl4ai with full browser control.
@@ -46,13 +64,26 @@ async def scrape_url(
         url:                  Full URL to scrape (https://...).
         wait_for:             CSS selector or JS expression to wait for before extracting.
                               Example: 'table.results' or 'js:window.__data !== undefined'
+                              Omit/null if not needed.
         js_code:              JavaScript to run on the page before extracting.
                               Example: 'document.querySelector(".expand").click();'
-        use_session:          Session ID string to reuse a browser session across calls.
-                              Pass the same string on subsequent calls to share state.
-                              Leave empty to use a fresh session each time.
+                              Omit/null if not needed.
+        session_id:           Arbitrary string ID to reuse a browser session across calls.
+                              Pass the SAME string on subsequent calls to share cookies/state
+                              (e.g. after a login step). Omit/null for a fresh session each
+                              time. NOTE: this is unrelated to ScrapeSpec.use_session (a
+                              bool flag) — if that flag is true, invent a session_id string
+                              here yourself and reuse it; never pass a boolean here.
         magic:                Enable crawl4ai anti-bot bypass mode.
         word_count_threshold: Minimum words a content block must have to be kept.
+        respect_robots_txt:   Honor the site's robots.txt before scraping.
+        remove_popups:        Strip cookie/consent banners and overlay modals.
+        css_selector:         Scope extraction to elements matching this selector.
+                              Example: 'main.report-content'. Omit/null if not needed.
+        excluded_tags:        Comma-separated HTML tags to drop entirely.
+                              Example: 'nav,footer,aside'. Omit/null if not needed.
+        exclude_external_links: Drop links pointing outside the scraped domain.
+        scan_full_page:        Auto-scroll before extracting — use for infinite-scroll feeds.
 
     Returns:
         Clean markdown text with source header, or a SCRAPE_ERROR/SCRAPE_EMPTY string.
@@ -61,8 +92,16 @@ async def scrape_url(
     if c4 is None:
         return "TOOL_UNAVAILABLE: crawl4ai not installed — pip install crawl4ai"
 
+    magic = _coerce_bool(magic)
+    respect_robots_txt = _coerce_bool(respect_robots_txt)
+    remove_popups = _coerce_bool(remove_popups)
+    exclude_external_links = _coerce_bool(exclude_external_links)
+    scan_full_page = _coerce_bool(scan_full_page)
+
     try:
         from crawl4ai import AsyncWebCrawler, BrowserConfig, CrawlerRunConfig, CacheMode
+
+        excluded_tag_list = [t.strip() for t in (excluded_tags or "").split(",") if t.strip()] or None
 
         browser_cfg = BrowserConfig(headless=True, verbose=False)
         run_cfg = CrawlerRunConfig(
@@ -70,14 +109,23 @@ async def scrape_url(
             word_count_threshold=word_count_threshold,
             wait_for=wait_for or None,
             js_code=js_code or None,
-            session_id=use_session or None,
+            session_id=session_id or None,
             magic=magic,
             page_timeout=30_000,
             simulate_user=magic,
             override_navigator=magic,
+            check_robots_txt=respect_robots_txt,
+            remove_overlay_elements=remove_popups,
+            css_selector=css_selector or None,
+            excluded_tags=excluded_tag_list,
+            exclude_external_links=exclude_external_links,
+            scan_full_page=scan_full_page,
         )
 
-        log.info("crawl4ai scraping %s (wait_for=%r, js=%r, magic=%s)", url, wait_for or None, bool(js_code), magic)
+        log.info(
+            "crawl4ai scraping %s (wait_for=%r, js=%r, magic=%s, robots=%s, popups=%s, css=%r)",
+            url, wait_for, bool(js_code), magic, respect_robots_txt, remove_popups, css_selector,
+        )
 
         async with AsyncWebCrawler(config=browser_cfg) as crawler:
             result = await crawler.arun(url=url, config=run_cfg)
