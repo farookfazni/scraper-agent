@@ -1,11 +1,10 @@
 """
 crawl4ai scraping tools — full feature set.
 
-Four tools exported:
-  scrape_url        — single URL, full options (wait_for, js_code, session, magic)
-  scrape_urls       — parallel scrape of multiple URLs via arun_many
+Three tools exported:
+  scrape_url         — single URL, full options (wait_for, js_code, session, magic)
+  scrape_urls        — parallel scrape of multiple URLs via arun_many
   extract_structured — CSS/JSON schema extraction (no LLM, fast, for table-heavy pages)
-  scrape_pdf_url    — crawl4ai PDF extraction (fallback when pdfplumber fails)
 """
 
 from __future__ import annotations
@@ -17,6 +16,9 @@ from agents import function_tool
 from scraper.tools.cache import cached_tool
 
 log = logging.getLogger(__name__)
+
+# Shared content cap so single and batch scrapes don't silently diverge.
+MAX_CONTENT_CHARS = 20_000
 
 
 def _import_crawl4ai():
@@ -101,8 +103,8 @@ async def scrape_url(
         if not content:
             return "SCRAPE_EMPTY: crawl4ai extracted no text from this page"
 
-        if len(content) > 20_000:
-            content = content[:20_000] + "\n\n[... truncated at 20 000 chars ...]"
+        if len(content) > MAX_CONTENT_CHARS:
+            content = content[:MAX_CONTENT_CHARS] + f"\n\n[... truncated at {MAX_CONTENT_CHARS:,} chars ...]"
 
         log.info("crawl4ai scraped %s — %d chars", url, len(content))
         return f"[Source: {url}]\n\n{content}"
@@ -167,8 +169,8 @@ async def scrape_urls(urls_json: str) -> str:
                 content = getattr(res, "extracted_content", "") or ""
 
             content = str(content).strip()
-            if len(content) > 15_000:
-                content = content[:15_000] + "\n\n[... truncated ...]"
+            if len(content) > MAX_CONTENT_CHARS:
+                content = content[:MAX_CONTENT_CHARS] + f"\n\n[... truncated at {MAX_CONTENT_CHARS:,} chars ...]"
 
             output.append({"url": url, "status": "ok", "content": content})
             log.info("crawl4ai parallel: %s — %d chars", url, len(content))

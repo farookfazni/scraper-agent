@@ -150,8 +150,8 @@ Every tool follows the same contract: **return a string (or JSON-string) describ
 | `TOOL_UNAVAILABLE: ...` | Missing API key or missing optional package | Skip silently, try the next tool |
 | `ERROR: ...` | Malformed input to the tool itself (e.g. bad JSON) | — |
 
-- **`scrape_url`** (`crawl4ai_tool.py`) — headless-browser scrape via crawl4ai's `AsyncWebCrawler`. Supports `wait_for`/`js_code`/`magic` (anti-bot heuristics) passed straight from `ScrapeSpec`. Prefers `fit_markdown` → `raw_markdown` → raw string → `extracted_content`. Truncates to 20,000 chars, 30s page timeout.
-- **`scrape_urls`** — same engine, parallel via `arun_many`, for 3+ URL batches. Per-URL truncation is 15,000 chars (note: different limit than `scrape_url` — an inconsistency, not a deliberate tiering).
+- **`scrape_url`** (`crawl4ai_tool.py`) — headless-browser scrape via crawl4ai's `AsyncWebCrawler`. Supports `wait_for`/`js_code`/`magic` (anti-bot heuristics) passed straight from `ScrapeSpec`. Prefers `fit_markdown` → `raw_markdown` → raw string → `extracted_content`. Truncates to `MAX_CONTENT_CHARS` (20,000 chars), 30s page timeout.
+- **`scrape_urls`** — same engine, parallel via `arun_many`, for 3+ URL batches. Per-URL truncation shares the same `MAX_CONTENT_CHARS` constant as `scrape_url`.
 - **`extract_structured`** — pure CSS-selector extraction via crawl4ai's `JsonCssExtractionStrategy`; no LLM call, used for known-structure table pages.
 - **`pdf_extract`** (`pdf_tool.py`) — downloads the PDF (spoofed User-Agent, `verify=False`), validates it isn't actually HTML via the `%PDF` magic-byte check, tries `pdfplumber` first (tables as pipe-delimited markdown + filtered text), falls back to `pymupdf4llm` if that yields under 50 chars. Caps at 30,000 chars / 40 pages. No OCR — scanned image PDFs without a text layer will return `SCRAPE_EMPTY`.
 - **`duckduckgo_search` / `tavily_search` / `firecrawl_search`** (`search_tool.py`) — three independent search backends. DDG needs no key; the other two are Python-client fallbacks used only when the corresponding MCP server isn't mounted (no key set).
@@ -175,7 +175,7 @@ On Windows, `npx` is invoked via `cmd /c npx ...` rather than directly — `_npx
 - **String-sentinel error protocol** avoids exceptions terminating agent runs, but means tool authors must remember the convention — there's no shared exception type or `Result`-like structure enforcing it.
 - **Output-path recovery via text search** (`ScraperAgent.run()` looking for `"Saved:"` + a valid `.json` path) is a fragile bridge — if the LLM paraphrases or the model doesn't echo the exact save path, the run reports `status="failed"` even though a file was actually written.
 - **`verify=False`** (TLS verification disabled) is hardcoded in both `pdf_tool.py` and `fetch_tool.py`. Deliberate, likely for compatibility with self-signed/corporate-proxy certs, but worth knowing before pointing this at anything security-sensitive.
-- **Truncation limits are inconsistent** across tools (20k / 15k / 30k / 15k chars) — not a tiered design, just accreted defaults.
+- **Truncation limits still vary across tool *families*** — crawl4ai tools (`scrape_url`/`scrape_urls`) share a `MAX_CONTENT_CHARS` constant (20k chars), while `pdf_extract` (30k) and `fetch_url` (15k, no marker) use their own independent limits — not a deliberately tiered design, just different tools evolving separately.
 - **No test suite** exists yet. There's no `tests/` directory, no pytest config, and no CI. This is the most significant gap for anyone planning to extend the tool set (see `docs/DEVELOPER.md`).
 
 ## 6. Output contract
