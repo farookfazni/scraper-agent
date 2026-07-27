@@ -25,10 +25,11 @@ import os
 import time
 
 from agents import Agent, MultiProvider, RunConfig, Runner
+from agents.items import ToolCallItem, ToolCallOutputItem
 from scraper.spec import ScrapeSpec, ScrapeOutput
 from scraper.skills import load_skill
 from scraper.tools import (
-    scrape_url, scrape_urls, extract_structured,
+    scrape_url, scrape_urls, extract_structured, crawl_paginated,
     pdf_extract,
     duckduckgo_search, tavily_search, firecrawl_search,
     fetch_url,
@@ -56,7 +57,18 @@ _MCP_SKILLS = {
 # already-configured OpenAI-compatible client (see main.py::_setup_client)
 # instead of erroring — this is the SDK's documented escape hatch for exactly
 # this case.
-_MODEL_PROVIDER = MultiProvider(unknown_prefix_mode="model_id")
+#
+# openai_use_responses=False forces the classic Chat Completions API
+# (POST /chat/completions) instead of the SDK's default — OpenAI's newer
+# Responses API (POST /responses). The SDK defaults use_responses=True
+# globally. Chat Completions is the far more universal, battle-tested
+# standard across OpenAI-compatible providers; Responses is newer and,
+# even where a provider claims support, its tool-calling compatibility layer
+# has proven unreliable in practice here (malformed "<function=...>" text
+# artifacts leaking through instead of clean structured tool calls, observed
+# across multiple different models on Groq). Chat Completions' tool-calling
+# is what virtually every provider gets right first and tests most.
+_MODEL_PROVIDER = MultiProvider(unknown_prefix_mode="model_id", openai_use_responses=False)
 
 _BASE_INSTRUCTIONS = """
 You are the ScraperAgent — a universal web scraper that extracts structured data
@@ -126,6 +138,34 @@ sections at the end of this prompt — this table only sets the TRY ORDER.
     1. firecrawl `firecrawl_crawl`   ← follows links across the site (MCP)
     2. scrape_urls(urls_json)         ← parallel batch via crawl4ai
 
+  PAGINATED LISTINGS — check this on every scrape, not just when asked:
+    After your first scrape_url call, check whether the content shows
+    pagination (page numbers, "Next"/"Prev" links, "Page X of Y", numbered
+    links like 1 2 3 4 5). If it does AND the user's goal implies wanting
+    the complete set (e.g. "list all X", "every Y", extract_fields
+    suggesting a list of many items) — don't stop at page 1:
+      1. firecrawl `firecrawl_crawl`  ← if Firecrawl MCP is mounted, prefer
+         this — it follows pagination/links itself, no pattern needed.
+      2. crawl_paginated(start_url, max_pages, url_pattern)  ← otherwise,
+         THIS is the primary tool. It follows the real pagination links
+         deterministically (crawl4ai's own crawl engine) instead of you
+         constructing URLs yourself. Look at the actual pagination link
+         hrefs on the first page and pass a glob matching them as
+         url_pattern (e.g. '*page=*' or '*/page/*'), and set max_pages to
+         the real total page count you saw (e.g. "Page 1 of 5" → 5).
+         Returns one JSON object per page — merge every page's items into
+         one combined `data` list before saving.
+      3. Only if crawl_paginated errors or crawl4ai is unavailable: fall
+         back to manually building page URLs yourself and calling
+         scrape_urls(urls_json) with all of them — this is a last resort,
+         not the default path.
+    If you can't confidently identify the pagination link pattern, still
+    call crawl_paginated with just max_pages set (it will same-domain-scope
+    the crawl as a safety net) rather than giving up — but if that clearly
+    still isn't catching the right pages, add a note to `errors` saying
+    pagination was detected but not fully followed. Don't silently
+    under-deliver without saying so.
+
   Deep research across many pages:
     1. firecrawl `firecrawl_deep_research` ← multi-step AI research (MCP)
 
@@ -134,6 +174,16 @@ sections at the end of this prompt — this table only sets the TRY ORDER.
        workflow (search-actors → fetch-actor-details → call-actor), not a
        fixed list of tools. Use it when the target is a known platform a
        generic scraper struggles with.
+    If Apify MCP is NOT mounted and the target is a login-gated / bot-hostile
+    platform (LinkedIn, Instagram, most job boards behind a sign-in wall,
+    etc.): do NOT attempt complex js_code interactions (clicking buttons,
+    triggering search) to work around the login wall — this rarely works
+    (you'll just see the login page) and risks generating malformed tool
+    calls (see the js_code RULE below). Instead: try one plain scrape_url or
+    fetch_url call with no js_code, and if the content is clearly a login
+    wall or near-empty, report status="partial"/"failed" with an error
+    noting the platform requires APIFY_API_KEY (or a logged-in session) to
+    scrape properly — don't keep escalating to more elaborate JS attempts.
 
   Regular web pages (site_type="general", "news", "ecommerce", "financial"):
     1. tavily `extract`              ← direct URL content pull (Tavily MCP)
@@ -201,6 +251,15 @@ RULES
   fields, but scrape_url does NOT accept any of those as parameters — passing
   them will be rejected. Read each tool's own parameter list (in its skill
   doc below) before calling it, don't assume it mirrors the spec.
+• Keep scrape_url's js_code SIMPLE — a short, single expression, one quote
+  style only (prefer no nested/escaped quotes at all, e.g. use a CSS selector
+  with no quoted attribute values, or restructure to avoid mixing ' and "
+  inside the same string). Complex js_code with nested/escaped quotes has
+  caused tool-call generation itself to fail outright (not a schema error —
+  the call never forms at all) on some models. If a scrape_url call with
+  js_code fails or errors for any reason, retry ONCE with js_code omitted
+  before moving to the next tool in the priority order — don't retry with
+  more elaborate js_code.
 • MCP tool names come from the server (firecrawl_scrape, search, extract, etc.) —
   they appear automatically in your tool list when the MCP server is mounted.
 • Call save_result exactly once at the end of every run.
@@ -263,6 +322,7 @@ class ScraperAgent:
             scrape_url,
             scrape_urls,
             extract_structured,
+            crawl_paginated,
             # PDF
             pdf_extract,
             # Search (Python clients — fallback when MCP not mounted)
@@ -315,9 +375,31 @@ class ScraperAgent:
         output_str = str(result.final_output or "")
         log.info("ScraperAgent finished in %.1fs — output: %s", duration, output_str[:120])
 
-        # Try to find and parse the saved JSON file path from agent output
+        # Primary path: read save_result's actual return value from the tool-call
+        # trace (correlated by call_id), not the model's paraphrased final chat
+        # message. The model's last message is free text and isn't guaranteed to
+        # repeat the exact "Saved: <path>" string even when the save succeeded —
+        # relying on that was the previous (fragile) approach.
+        save_result_output: str | None = None
+        outputs_by_call_id = {
+            item.call_id: item.output
+            for item in result.new_items
+            if isinstance(item, ToolCallOutputItem)
+        }
+        for item in result.new_items:
+            if isinstance(item, ToolCallItem) and item.tool_name == "save_result":
+                save_result_output = outputs_by_call_id.get(item.call_id)
+                break
+
         saved_path = None
-        if "Saved:" in output_str:
+        if save_result_output and str(save_result_output).startswith("Saved:"):
+            candidate = str(save_result_output).split("Saved:", 1)[1].strip()
+            if os.path.exists(candidate):
+                saved_path = candidate
+
+        # Fallback: scan the model's final text in case the tool-call trace
+        # couldn't be correlated for some reason (e.g. a future SDK change).
+        if not saved_path and "Saved:" in output_str:
             for part in output_str.split():
                 if part.endswith(".json") and os.path.exists(part):
                     saved_path = part

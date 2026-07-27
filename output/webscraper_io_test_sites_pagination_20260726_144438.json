@@ -1,0 +1,44 @@
+{
+  "status": "success",
+  "data": {
+    "items": [
+      {
+        "name": "Mercedes-Benz W123 280E 1955",
+        "price": "USD 228 511"
+      },
+      {
+        "name": "BMW E24 635CSi 1954",
+        "price": "USD 18 457"
+      },
+      {
+        "name": "Jaguar XJ6 1983",
+        "price": "USD 268 210"
+      },
+      {
+        "name": "Nissan 300ZX Z31 1966",
+        "price": "USD 104 195"
+      },
+      {
+        "name": "Ferrari F40 1984",
+        "price": "USD 277 672"
+      },
+      {
+        "name": "Mercedes-Benz W123 280E 1972",
+        "price": "USD 157 569"
+      }
+    ]
+  },
+  "sources": [
+    "https://webscraper.io/test-sites/pagination"
+  ],
+  "tools_used": [
+    "scrape_url"
+  ],
+  "errors": [],
+  "raw_text": null,
+  "_meta": {
+    "schema_name": "webscraper_io_test_sites_pagination",
+    "saved_at": "2026-07-26T14:44:38",
+    "version": "1.0"
+  }
+}

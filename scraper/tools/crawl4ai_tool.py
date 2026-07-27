@@ -1,10 +1,12 @@
 """
 crawl4ai scraping tools — full feature set.
 
-Three tools exported:
+Four tools exported:
   scrape_url         — single URL, full options (wait_for, js_code, session, magic)
   scrape_urls        — parallel scrape of multiple URLs via arun_many
   extract_structured — CSS/JSON schema extraction (no LLM, fast, for table-heavy pages)
+  crawl_paginated     — deterministic multi-page crawl via crawl4ai's BFSDeepCrawlStrategy,
+                        for numbered-page pagination (page 1, 2, 3, ... following real links)
 """
 
 from __future__ import annotations
@@ -292,3 +294,121 @@ async def extract_structured(url: str, css_schema_json: str) -> str:
     except Exception as e:
         log.warning("crawl4ai CSS extraction failed for %s: %s", url, e)
         return f"SCRAPE_ERROR: crawl4ai CSS extraction — {e}"
+
+
+@function_tool
+async def crawl_paginated(
+    start_url: str,
+    max_pages: int = 5,
+    url_pattern: str | None = None,
+    same_domain_only: bool | str = True,
+    word_count_threshold: int = 50,
+) -> str:
+    """
+    Follow numbered-page pagination links deterministically, starting from
+    one listing page, using crawl4ai's built-in BFS deep-crawl engine —
+    NOT prompt-guessed URL construction. Use this whenever a page shows
+    pagination (page numbers, Next/Prev links, "Page X of Y") and you need
+    the complete set of items across pages, not just the first page.
+
+    Args:
+        start_url:        The first/current listing page URL.
+        max_pages:        Max total pages to visit, INCLUDING start_url.
+                           Keep this close to the real page count you saw
+                           (e.g. "Page 1 of 5" -> max_pages=5) — don't
+                           over-set it on sites with large link counts.
+        url_pattern:       Glob pattern matching ONLY the pagination links
+                           you saw on the page, e.g. "*page=*" or "*/page/*".
+                           STRONGLY recommended — without it, the crawl may
+                           follow unrelated same-domain links (nav, footer)
+                           instead of just the next pages. Read the actual
+                           pagination link hrefs from the first page before
+                           calling this, and build the pattern from them.
+        same_domain_only:  Restrict the crawl to the same domain as
+                           start_url (default True — almost always correct
+                           for pagination).
+        word_count_threshold: Minimum words a content block must have to be kept.
+
+    Returns:
+        JSON array — one object per crawled page with keys: url, status, content.
+        Same shape as scrape_urls, so it can be processed the same way.
+    """
+    c4 = _import_crawl4ai()
+    if c4 is None:
+        return "TOOL_UNAVAILABLE: crawl4ai not installed — pip install crawl4ai"
+
+    same_domain_only = _coerce_bool(same_domain_only)
+
+    try:
+        from crawl4ai import AsyncWebCrawler, BrowserConfig, CrawlerRunConfig, CacheMode
+        from crawl4ai.deep_crawling import BFSDeepCrawlStrategy, FilterChain, URLPatternFilter, DomainFilter
+
+        filters = []
+        if same_domain_only:
+            from urllib.parse import urlparse
+            domain = urlparse(start_url).netloc
+            if domain:
+                filters.append(DomainFilter(allowed_domains=[domain]))
+        if url_pattern:
+            filters.append(URLPatternFilter(patterns=[url_pattern]))
+
+        strategy = BFSDeepCrawlStrategy(
+            max_depth=1,
+            max_pages=max_pages,
+            filter_chain=FilterChain(filters),
+            include_external=not same_domain_only,
+        )
+        browser_cfg = BrowserConfig(headless=True, verbose=False)
+        run_cfg = CrawlerRunConfig(
+            deep_crawl_strategy=strategy,
+            stream=False,
+            cache_mode=CacheMode.BYPASS,
+            word_count_threshold=word_count_threshold,
+            page_timeout=30_000,
+        )
+
+        log.info(
+            "crawl4ai paginated crawl from %s (max_pages=%d, pattern=%r, same_domain=%s)",
+            start_url, max_pages, url_pattern, same_domain_only,
+        )
+
+        async with AsyncWebCrawler(config=browser_cfg) as crawler:
+            # With deep_crawl_strategy set and stream=False, arun() returns a
+            # plain list of CrawlResult (one per crawled page) — NOT the
+            # single-result container scrape_url/scrape_urls assume.
+            results = await crawler.arun(url=start_url, config=run_cfg)
+
+        if not results:
+            return "SCRAPE_EMPTY: crawl_paginated found no pages (check url_pattern matches real links)"
+
+        output = []
+        for res in results:
+            page_url = getattr(res, "url", "unknown")
+            if not getattr(res, "success", False):
+                err = getattr(res, "error_message", "failed")
+                log.warning("crawl4ai paginated: %s failed — %s", page_url, err)
+                output.append({"url": page_url, "status": "error", "content": f"SCRAPE_ERROR: {err}"})
+                continue
+
+            md = getattr(res, "markdown", None)
+            if md and hasattr(md, "fit_markdown") and md.fit_markdown:
+                content = md.fit_markdown
+            elif md and hasattr(md, "raw_markdown") and md.raw_markdown:
+                content = md.raw_markdown
+            elif md and isinstance(md, str):
+                content = md
+            else:
+                content = getattr(res, "extracted_content", "") or ""
+
+            content = str(content).strip()
+            if len(content) > MAX_CONTENT_CHARS:
+                content = content[:MAX_CONTENT_CHARS] + f"\n\n[... truncated at {MAX_CONTENT_CHARS:,} chars ...]"
+
+            output.append({"url": page_url, "status": "ok", "content": content})
+
+        log.info("crawl4ai paginated: crawled %d page(s) from %s", len(output), start_url)
+        return json.dumps(output, ensure_ascii=False)
+
+    except Exception as e:
+        log.warning("crawl4ai paginated crawl failed for %s: %s", start_url, e)
+        return f"SCRAPE_ERROR: crawl4ai paginated crawl — {e}"

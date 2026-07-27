@@ -1,0 +1,20 @@
+{
+  "status": "partial",
+  "data": {
+    "title": "AI Engineer Roadmap",
+    "description": "Step by step guide to becoming an AI Engineer in 2026"
+  },
+  "sources": [
+    "https://roadmap.sh/ai-engineer"
+  ],
+  "tools_used": [
+    "fetch_url"
+  ],
+  "errors": [],
+  "raw_text": null,
+  "_meta": {
+    "schema_name": "roadmap_sh_ai_engineer",
+    "saved_at": "2026-07-25T14:12:15",
+    "version": "1.0"
+  }
+}

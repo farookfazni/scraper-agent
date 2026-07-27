@@ -1,0 +1,34 @@
+{
+  "status": "success",
+  "data": {
+    "item_name": [
+      "Mercedes-Benz W123 280E 1955",
+      "BMW E24 635CSi 1954",
+      "Jaguar XJ6 1983",
+      "Nissan 300ZX Z31 1966",
+      "Ferrari F40 1984",
+      "Mercedes-Benz W123 280E 1972"
+    ],
+    "item_price": [
+      228511,
+      18457,
+      268210,
+      104195,
+      277672,
+      157569
+    ]
+  },
+  "sources": [
+    "https://webscraper.io/test-sites/pagination"
+  ],
+  "tools_used": [
+    "scrape_url"
+  ],
+  "errors": [],
+  "raw_text": null,
+  "_meta": {
+    "schema_name": "webscraper_io_test_sites_pagination",
+    "saved_at": "2026-07-26T17:49:19",
+    "version": "1.0"
+  }
+}

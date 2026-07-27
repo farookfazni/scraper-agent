@@ -2,7 +2,7 @@
 
 crawl4ai is a headless-browser scraper — it renders JavaScript, so it works on
 pages plain HTTP can't (fetch_url can't). It's your default, general-purpose
-scraper when no MCP tool is mounted or better suited. Three tools:
+scraper when no MCP tool is mounted or better suited. Four tools:
 
 ### scrape_url(url, wait_for=None, js_code=None, session_id=None, magic=False, word_count_threshold=50, respect_robots_txt=False, remove_popups=False, css_selector=None, excluded_tags=None, exclude_external_links=False, scan_full_page=False)
 Scrapes ONE URL, returns clean markdown (prefers crawl4ai's cleaned
@@ -14,7 +14,13 @@ Param guidance:
   for React/Vue/Angular pages that render content after initial load.
   Example: `'table.financial-data'` or `'js:document.querySelector(".data")'`
 - `js_code` — JS to run before extracting (click "load more", expand a
-  section, dismiss a modal manually).
+  section, dismiss a modal manually). KEEP IT SIMPLE: a short single
+  expression, one quote style only. Avoid nested/escaped quotes (e.g.
+  `document.querySelectorAll('[aria-label=\"X\"]')` mixing ' and ") — on some
+  models this breaks tool-call generation itself, not just execution. Prefer
+  selectors with no quoted attribute values, or keep everything in one quote
+  style. If a call with js_code fails, retry once with js_code omitted before
+  trying a different tool.
 - `session_id` — pass the same arbitrary string across multiple calls to
   preserve login/cookies between them (e.g. login page then a data page).
   This is DIFFERENT from ScrapeSpec's `use_session` field (a bool) — if that
@@ -73,5 +79,37 @@ before `scrape_url` for `site_type="table"` pages when you can identify the
 selectors from the page structure — it's faster and more precise than
 free-text extraction from markdown.
 
-Gotcha: all three tools are Python function calls, not an MCP server —
+### crawl_paginated(start_url, max_pages=5, url_pattern=None, same_domain_only=True, word_count_threshold=50)
+Deterministic multi-page crawl for NUMBERED PAGINATION (page 1, 2, 3, ... via
+real links) — built on crawl4ai's own BFS deep-crawl engine, not prompt-guessed
+URL construction. **This is the primary tool for "list all X across every
+page" requests** — don't manually build page URLs and loop `scrape_urls`
+yourself; that's unreliable (you'll often only get page 1). Use this instead.
+
+Param guidance:
+- `url_pattern` — a glob matching ONLY the actual pagination link hrefs you
+  saw on the first page, e.g. `'*page=*'` or `'*/page/*'`. **Read the real
+  pagination links first, then build this from them** — don't guess a
+  pattern you haven't actually seen. Without one, the crawl falls back to
+  same-domain-scoping alone, which may pick up unrelated nav/footer links
+  instead of just the next pages — still usable as a safety net, but less
+  precise.
+- `max_pages` — total pages to visit, INCLUDING the start page. Set this to
+  the real total you saw (e.g. "Page 1 of 5" → 5), not an arbitrarily large
+  number — this isn't a general site crawler, don't let it wander.
+- `same_domain_only` — leave True almost always; pagination stays on-site.
+
+Returns the same shape as `scrape_urls`: a JSON array of `{url, status,
+content}`, one entry per page actually crawled — merge every page's items
+into one combined list in `data` before calling save_result. Only ever
+crawls one hop from `start_url` (depth=1) — it follows pagination links, not
+a general multi-level site crawl (use Firecrawl's `firecrawl_crawl` MCP tool
+for that instead, if mounted).
+
+Failure modes: `SCRAPE_EMPTY: ...` if `url_pattern` matched nothing (check
+it against the real hrefs again), `SCRAPE_ERROR: ...` on a crawl failure —
+fall back to manually building page URLs + `scrape_urls` only as a last
+resort if this tool itself is unavailable.
+
+Gotcha: all four tools are Python function calls, not an MCP server —
 there's no separate connection/auth step, they're always in your tool list.

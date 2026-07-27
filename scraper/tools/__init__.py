@@ -1,4 +1,4 @@
-from scraper.tools.crawl4ai_tool import scrape_url, scrape_urls, extract_structured
+from scraper.tools.crawl4ai_tool import scrape_url, scrape_urls, extract_structured, crawl_paginated
 from scraper.tools.pdf_tool import pdf_extract
 from scraper.tools.search_tool import duckduckgo_search, tavily_search, firecrawl_search
 from scraper.tools.fetch_tool import fetch_url
@@ -9,6 +9,7 @@ __all__ = [
     "scrape_url",
     "scrape_urls",
     "extract_structured",
+    "crawl_paginated",
     "pdf_extract",
     "duckduckgo_search",
     "tavily_search",

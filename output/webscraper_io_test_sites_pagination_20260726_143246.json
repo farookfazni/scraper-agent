@@ -1,0 +1,20 @@
+{
+  "status": "success",
+  "data": {
+    "title": "Test site with pagination links",
+    "summary": "This is a test site with pagination links."
+  },
+  "sources": [
+    "https://webscraper.io/test-sites/pagination"
+  ],
+  "tools_used": [
+    "scrape_url"
+  ],
+  "errors": [],
+  "raw_text": null,
+  "_meta": {
+    "schema_name": "webscraper_io_test_sites_pagination",
+    "saved_at": "2026-07-26T14:32:46",
+    "version": "1.0"
+  }
+}

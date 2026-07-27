@@ -8,6 +8,7 @@ Guidance for Claude Code when working in this repository.
 python -m venv .venv
 .venv\Scripts\activate          # Windows
 pip install -r requirements.txt
+playwright install chromium     # required — crawl4ai's browser binary, not installed by pip alone
 copy .env.example .env          # fill in PROVIDER + API key
 ```
 
@@ -38,6 +39,7 @@ main.py  (CLI / REPL)
               ├── scrape_url          — single URL, full crawl4ai options
               ├── scrape_urls         — parallel batch via arun_many
               ├── extract_structured  — CSS-selector table extraction
+              ├── crawl_paginated     — deterministic multi-page crawl (numbered pagination)
               ├── pdf_extract         — pdfplumber → pymupdf4llm fallback
               ├── duckduckgo_search   — always available, no key
               ├── tavily_search       — Python client (fallback if MCP absent)
@@ -54,7 +56,7 @@ main.py  (CLI / REPL)
 | `scraper/agent.py` | `ScraperAgent` class — wraps the SDK `Agent`, holds tool list + mcp_servers, composes skill docs into the prompt, parses output |
 | `scraper/skills/` | Per-capability reference docs (crawl4ai, search/fetch, tavily/firecrawl/apify MCP) — loaded conditionally based on mounted MCP servers |
 | `mcp_servers/mcp_manager.py` | `build_scraper_mcp_servers()` — builds Tavily/Firecrawl/Apify MCP server instances |
-| `scraper/tools/crawl4ai_tool.py` | `scrape_url`, `scrape_urls`, `extract_structured` — full crawl4ai feature set |
+| `scraper/tools/crawl4ai_tool.py` | `scrape_url`, `scrape_urls`, `extract_structured`, `crawl_paginated` — full crawl4ai feature set |
 | `scraper/tools/pdf_tool.py` | `pdf_extract` — pdfplumber + pymupdf4llm |
 | `scraper/tools/search_tool.py` | `tavily_search`, `duckduckgo_search`, `firecrawl_search` (Python client fallbacks) |
 | `scraper/tools/fetch_tool.py` | `fetch_url` — plain httpx GET, last resort |
@@ -104,7 +106,10 @@ Ten providers: `openai`, `groq`, `openrouter`, `gemini`, `ollama`, `together`, `
 | any (URL given) | skip | per site_type above |
 | any (3+ URLs) | skip | scrape_urls (parallel) |
 | multi-page crawl | — | firecrawl_crawl (MCP) |
+| paginated listing (detected after 1st scrape) | — | firecrawl_crawl (MCP) → crawl_paginated (crawl4ai deep-crawl) → manual scrape_urls (last resort) |
 | deep research | — | firecrawl_deep_research (MCP) |
+
+The agent checks for pagination signals (page numbers, Next/Prev, "Page X of Y") after every first scrape, not just when explicitly asked. It now uses `crawl_paginated` — a deterministic tool built on crawl4ai's own `BFSDeepCrawlStrategy` — to actually follow the pagination links, rather than inferring a URL pattern itself and looping `scrape_urls` (that approach proved unreliable and often returned only page 1).
 
 MCP columns apply only when the relevant API key is set. Without any keys, the agent always has crawl4ai + DuckDuckGo.
 

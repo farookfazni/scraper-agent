@@ -24,8 +24,11 @@ Most scrapers are pipelines: fetch → parse → map fields, hardcoded per site.
 python -m venv .venv
 .venv\Scripts\activate          # Windows (use `source .venv/bin/activate` on macOS/Linux)
 pip install -r requirements.txt
+playwright install chromium     # required — crawl4ai's browser engine, not installed by pip alone
 copy .env.example .env          # then fill in PROVIDER + an API key
 ```
+
+`crawl4ai` (line in `requirements.txt`) pulls in the `playwright` Python package via pip, but Playwright's actual browser binary is a separate ~300MB download that `pip install` never triggers automatically. Skip this step and `scrape_url` will fail with `BrowserType.launch: Executable doesn't exist` and silently fall back to `fetch_url` (plain HTTP, no JavaScript rendering) — which returns much thinner content on any JS-rendered site.
 
 Optional extras for Tavily/Firecrawl Python-client fallbacks (not required for the MCP versions):
 
