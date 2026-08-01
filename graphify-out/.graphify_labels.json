@@ -1,0 +1,17 @@
+{
+  "0": "tools/__init__.py",
+  "1": "agent.py",
+  "2": "build_scraper_mcp_servers",
+  "3": "Architecture Report",
+  "4": "scraper-agent",
+  "5": "main.py",
+  "6": "Extending",
+  "7": "CLAUDE.md",
+  "8": "search_tool.py",
+  "9": "SKILL: Firecrawl MCP (mounted — FIRECRAWL_API_KEY is set)",
+  "10": "SKILL: search, PDF, and fallback tools (always available, Python)",
+  "11": "SKILL: Apify MCP (mounted — APIFY_API_KEY is set)",
+  "12": "SKILL: crawl4ai (always available, Python tools, no API key)",
+  "13": "SKILL: Tavily MCP (mounted — TAVILY_API_KEY is set)",
+  "14": "scraper-agent"
+}
